@@ -14,12 +14,13 @@ let gameOver = false;
 
 // Paddle: a rectangle the player moves horizontally
 const paddle = {
+  baseWidth: 90,
   width: 90,
   height: 12,
   x: W / 2 - 45,
   y: H - 30,
   speed: 7,
-  dx: 0            // current horizontal velocity (set by key state)
+  dx: 0      // current horizontal velocity (set by key state)
 };
 
 // Ball: position, velocity, radius
@@ -28,9 +29,66 @@ const ball = {
   y: paddle.y - 10,
   radius: 7,
   speed: 4.5,
+  speedModifier: 1,
   dx: 0,
   dy: 0
 };
+
+function resetBallOnPaddle() {
+  ball.x = W / 2;
+  ball.y = paddle.y - ball.radius - 1;
+  ball.dx = 0;
+  ball.dy = 0;
+}
+
+// Power-ups: falling squares that give temporary effects when collected
+const powerUps = [];
+const powerUpChance = 0.18;
+const powerUpFallSpeed = 2.2;
+const powerUpTypes = [
+  { type: 'expand', label: 'EXPAND', color: '#6dc9a6', duration: 10000 },
+  { type: 'slow', label: 'SLOW', color: '#f27c9b', duration: 10000 },
+  { type: 'life', label: '1-UP', color: '#6d9bf2', duration: 0 }
+];
+const activePowerUps = {
+  list: [],
+  expand: false,
+  slow: false
+};
+
+function getPowerUpInfo(type) {
+  return powerUpTypes.find(p => p.type === type) || powerUpTypes[0];
+}
+
+function setBallSpeedModifier(multiplier) {
+  ball.speedModifier = multiplier;
+  const speed = ball.speed * ball.speedModifier;
+  const angle = Math.atan2(ball.dy, ball.dx);
+  if (ball.dx !== 0 || ball.dy !== 0) {
+    ball.dx = Math.cos(angle) * speed;
+    ball.dy = Math.sin(angle) * speed;
+  }
+}
+
+function updateActivePowerUps(now) {
+  activePowerUps.list = activePowerUps.list.filter(p => p.duration === 0 || p.expiresAt > now);
+  activePowerUps.expand = activePowerUps.list.some(p => p.type === 'expand');
+  activePowerUps.slow = activePowerUps.list.some(p => p.type === 'slow');
+
+  paddle.width = activePowerUps.expand ? Math.min(paddle.baseWidth + 42, 180) : paddle.baseWidth;
+  paddle.x = Math.max(0, Math.min(W - paddle.width, paddle.x));
+  setBallSpeedModifier(activePowerUps.slow ? 0.75 : 1);
+}
+
+function formatActivePowerUps() {
+  const now = performance.now();
+  return activePowerUps.list.map(p => {
+    if (p.type === 'life') return getPowerUpInfo(p.type).label;
+    const seconds = Math.ceil((p.expiresAt - now) / 1000);
+    return `${getPowerUpInfo(p.type).label} ${seconds}s`;
+  }).join(', ') || 'NONE';
+}
+
 
 // Bricks: a 2D grid. Each brick has a status (1 = alive, 0 = destroyed)
 const brickInfo = {
@@ -141,7 +199,6 @@ document.getElementById('restartBtn').addEventListener('click', resetGame);
 function launchBall() {
   if (gameRunning || gameOver || paused) return;
   gameRunning = true;
-  // Launch at a slight random angle so it's not perfectly vertical
   const angle = (Math.random() * 0.6 - 0.3); // radians, -0.3 to 0.3
   ball.dx = ball.speed * Math.sin(angle);
   ball.dy = -ball.speed * Math.cos(angle);
@@ -160,7 +217,6 @@ function movePaddle() {
 
 function moveBall() {
   if (!gameRunning) {
-    // Ball rests on paddle before launch
     ball.x = paddle.x + paddle.width / 2;
     ball.y = paddle.y - ball.radius - 1;
     return;
@@ -169,7 +225,6 @@ function moveBall() {
   ball.x += ball.dx;
   ball.y += ball.dy;
 
-  // Wall collisions: left/right bounce, top bounces, bottom = lose life
   if (ball.x - ball.radius < 0 || ball.x + ball.radius > W) {
     ball.dx *= -1;
   }
@@ -181,7 +236,6 @@ function moveBall() {
     return;
   }
 
-  // Paddle collision: only bounce if ball is moving downward and overlaps paddle
   if (
     ball.dy > 0 &&
     ball.y + ball.radius >= paddle.y &&
@@ -189,16 +243,70 @@ function moveBall() {
     ball.x >= paddle.x &&
     ball.x <= paddle.x + paddle.width
   ) {
-    // Where the ball hit the paddle (-1 = far left, 0 = center, 1 = far right)
     const hitPos = (ball.x - (paddle.x + paddle.width / 2)) / (paddle.width / 2);
-    const maxAngle = Math.PI / 3; // 60 degrees max
+    const maxAngle = Math.PI / 3;
     const angle = hitPos * maxAngle;
 
-    ball.dx = ball.speed * Math.sin(angle);
-    ball.dy = -ball.speed * Math.cos(angle);
+    ball.dx = ball.speed * ball.speedModifier * Math.sin(angle);
+    ball.dy = -ball.speed * ball.speedModifier * Math.cos(angle);
   }
 
   checkBrickCollisions();
+}
+
+// POWER-UP LOGIC:
+function spawnPowerUp(x, y) {
+  if (Math.random() > powerUpChance) return;
+  const type = powerUpTypes[Math.floor(Math.random() * powerUpTypes.length)].type;
+  powerUps.push({
+    x: x + brickInfo.width / 2,
+    y: y + brickInfo.height / 2,
+    size: 16,
+    type
+  });
+}
+
+function movePowerUps() {
+  for (let i = powerUps.length - 1; i >= 0; i--) {
+    const powerUp = powerUps[i];
+    powerUp.y += powerUpFallSpeed;
+    if (powerUp.y - powerUp.size > H) {
+      powerUps.splice(i, 1);
+    }
+  }
+}
+
+function checkPowerUpCollection() {
+  for (let i = powerUps.length - 1; i >= 0; i--) {
+    const powerUp = powerUps[i];
+    if (
+      powerUp.x >= paddle.x &&
+      powerUp.x <= paddle.x + paddle.width &&
+      powerUp.y + powerUp.size / 2 >= paddle.y &&
+      powerUp.y - powerUp.size / 2 <= paddle.y + paddle.height
+    ) {
+      applyPowerUp(powerUp);
+      powerUps.splice(i, 1);
+    }
+  }
+}
+
+function applyPowerUp(powerUp) {
+  const now = performance.now();
+  if (powerUp.type === 'life') {
+    lives++;
+    score += 50;
+    updateHUD();
+    return;
+  }
+
+  const info = getPowerUpInfo(powerUp.type);
+  activePowerUps.list.push({
+    type: powerUp.type,
+    expiresAt: now + info.duration,
+    duration: info.duration
+  });
+  updateActivePowerUps(now);
 }
 
 function checkBrickCollisions() {
@@ -216,6 +324,7 @@ function checkBrickCollisions() {
         ball.dy *= -1;
         brick.status = 0;
         score += (brickInfo.rows - r) * 10; // top rows worth more
+        spawnPowerUp(brick.x, brick.y);
         updateHUD();
 
         if (allBricksCleared()) nextLevel();
@@ -233,8 +342,17 @@ function nextLevel() {
   level++;
   ball.speed += 0.5;
   gameRunning = false;
+  resetBallOnPaddle();
   createBricks();
   updateHUD();
+}
+
+function clearActivePowerUps() {
+  activePowerUps.list = activePowerUps.list.filter(p => p.type === 'life');
+  activePowerUps.expand = activePowerUps.list.some(p => p.type === 'expand');
+  activePowerUps.slow = activePowerUps.list.some(p => p.type === 'slow');
+  paddle.width = activePowerUps.expand ? Math.min(paddle.baseWidth + 42, 180) : paddle.baseWidth;
+  setBallSpeedModifier(activePowerUps.slow ? 0.72 : 1);
 }
 
 function loseLife() {
@@ -244,9 +362,18 @@ function loseLife() {
     endGame(false);
   } else {
     gameRunning = false;
-    ball.dx = 0;
-    ball.dy = 0;
+    clearActivePowerUps();
+    resetBallOnPaddle();
   }
+}
+
+function resetPowerUps() {
+  powerUps.length = 0;
+  activePowerUps.list.length = 0;
+  activePowerUps.expand = false;
+  activePowerUps.slow = false;
+  paddle.width = paddle.baseWidth;
+  ball.speedModifier = 1;
 }
 
 function endGame(won) {
@@ -263,12 +390,16 @@ function resetGame() {
   lives = 3;
   level = 1;
   ball.speed = 4.5;
+  ball.speedModifier = 1;
   paused = false;
   gameOver = false;
   gameRunning = false;
+  paddle.width = paddle.baseWidth;
   paddle.x = W / 2 - paddle.width / 2;
   ball.dx = 0;
   ball.dy = 0;
+  resetPowerUps();
+  resetBallOnPaddle();
   createBricks();
   updateHUD();
   document.getElementById('overlay').classList.remove('show');
@@ -278,6 +409,7 @@ function updateHUD() {
   document.getElementById('score').textContent = score;
   document.getElementById('lives').textContent = lives;
   document.getElementById('level').textContent = level;
+  document.getElementById('powerup').textContent = formatActivePowerUps();
 }
 
 // DRAWING:
@@ -338,11 +470,28 @@ function drawPauseMessage() {
   ctx.fillText('PRESS P TO RESUME', W / 2, H / 2 + 16);
 }
 
+function drawPowerUps() {
+  for (const powerUp of powerUps) {
+    const info = getPowerUpInfo(powerUp.type);
+    ctx.fillStyle = info.color;
+    ctx.shadowColor = info.color;
+    ctx.shadowBlur = 10;
+    ctx.fillRect(powerUp.x - powerUp.size / 2, powerUp.y - powerUp.size / 2, powerUp.size, powerUp.size);
+    ctx.shadowBlur = 0;
+
+    ctx.fillStyle = '#05080f';
+    ctx.font = '10px "JetBrains Mono", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(info.label[0], powerUp.x, powerUp.y + 3);
+  }
+}
+
 function draw() {
   ctx.clearRect(0, 0, W, H);
   drawBricks();
   drawPaddle();
   drawBall();
+  drawPowerUps();
   drawPrompt();
   drawPauseMessage();
 }
@@ -352,8 +501,13 @@ function draw() {
 // Each call: update state -> draw -> schedule next frame.
 function gameLoop() {
   if (!gameOver && !paused) {
+    const now = performance.now();
     movePaddle();
     moveBall();
+    movePowerUps();
+    checkPowerUpCollection();
+    updateActivePowerUps(now);
+    updateHUD();
   }
   draw();
   requestAnimationFrame(gameLoop);
